@@ -20,7 +20,34 @@ cargo install --git https://github.com/<you>/swap-worktree.git
 
 #### 2. Use prebuilt binaries
 
-Pushes to `main` publish release artifacts for Linux, macOS, and Windows. Download the latest archive from the GitHub Releases page and place the binary on your `PATH`.
+Pushes to `main` publish release artifacts for Linux, macOS, and Windows. To install:
+
+1. Download the archive that matches your OS from the latest GitHub Release.
+2. Extract it locally; the archive contains a single executable named `swap-worktree` (or `swap-worktree.exe` on Windows).
+3. Move the executable to a directory on your `PATH`.
+
+##### macOS & Linux
+
+```bash
+tar -xzf swap-worktree-macos-universal.tar.gz   # or the linux archive
+sudo install -m 755 swap-worktree /usr/local/bin/
+```
+
+You can choose any directory that is already on your `PATH` (e.g., `/usr/local/bin`, `$HOME/.cargo/bin`, `$HOME/bin`). Verify with `which swap-worktree`.
+
+##### Windows
+
+```powershell
+Expand-Archive -Path swap-worktree-windows-x86_64.zip -DestinationPath C:\tools\swap-worktree
+```
+
+Add the folder containing `swap-worktree.exe` to the `PATH` environment variable (Control Panel → System → Advanced system settings → Environment Variables → Edit the `Path` entry → Add the folder). Alternatively, from PowerShell:
+
+```powershell
+setx PATH "$($Env:PATH);C:\tools\swap-worktree"
+```
+
+Move any existing PowerShell windows to pick up the new `PATH`, or start a fresh terminal and run `swap-worktree --help` to verify installation. You can also keep the binary alongside your repositories and invoke it with an explicit path if you prefer not to modify `PATH`.
 
 ### Usage
 
