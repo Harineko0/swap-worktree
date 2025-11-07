@@ -1,0 +1,13 @@
+version: 2
+
+# Dependabot does not support a custom "every three days" cadence,
+# so the closest approximation is to run daily.
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: daily
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
