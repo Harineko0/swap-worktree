@@ -24,6 +24,28 @@ struct StashRecord {
     branch: String,
 }
 
+struct Logger {
+    debug_enabled: bool,
+}
+
+impl Logger {
+    fn new(debug_enabled: bool) -> Self {
+        Self { debug_enabled }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.debug_enabled
+    }
+}
+
+macro_rules! debug_log {
+    ($logger:expr, $($arg:tt)*) => {
+        if $logger.is_enabled() {
+            println!($($arg)*);
+        }
+    };
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("{err}");
@@ -34,37 +56,76 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let mut argv = env::args();
     let program = argv.next().unwrap_or_else(|| "swap-worktree".to_string());
-    let dest_arg = match argv.next() {
-        Some(value) => value,
-        None => return Err(usage_error(&program)),
-    };
-    let src_branch = match argv.next() {
-        Some(value) => value,
-        None => return Err(usage_error(&program)),
-    };
-    if argv.next().is_some() {
+
+    let mut debug_enabled = false;
+    let mut dest_arg: Option<String> = None;
+    let mut src_branch: Option<String> = None;
+    let mut parsing_flags = true;
+
+    for arg in argv {
+        if parsing_flags {
+            match arg.as_str() {
+                "-d" | "--debug" => {
+                    debug_enabled = true;
+                    continue;
+                }
+                "--" => {
+                    parsing_flags = false;
+                    continue;
+                }
+                _ => {
+                    if arg.starts_with('-') {
+                        return Err(usage_error(&program));
+                    }
+                }
+            }
+        }
+
+        if dest_arg.is_none() {
+            dest_arg = Some(arg);
+            continue;
+        }
+        if src_branch.is_none() {
+            src_branch = Some(arg);
+            continue;
+        }
         return Err(usage_error(&program));
     }
+
+    let dest_arg = match dest_arg {
+        Some(value) => value,
+        None => return Err(usage_error(&program)),
+    };
+    let src_branch = match src_branch {
+        Some(value) => value,
+        None => return Err(usage_error(&program)),
+    };
+
+    let logger = Logger::new(debug_enabled);
 
     let dest_dir = canonicalize_dir(&dest_arg)?;
     ensure_git_worktree(&dest_dir)?;
 
     let repo_root = determine_repo_root(&dest_dir)?;
-    println!("Operating in repository: {}", repo_root.display());
-    println!("---");
+    debug_log!(&logger, "Operating in repository: {}", repo_root.display());
+    debug_log!(&logger, "---");
 
-    println!(
+    debug_log!(
+        &logger,
         "Step 1: Fetching branch for destination directory '{}'...",
         dest_dir.display()
     );
     let dest_branch = current_branch(&dest_dir)?;
-    println!("Found destination branch: '{dest_branch}'");
-    println!("---");
+    debug_log!(&logger, "Found destination branch: '{dest_branch}'");
+    debug_log!(&logger, "---");
 
-    println!("Step 2: Fetching directory for source branch '{src_branch}'...");
+    debug_log!(
+        &logger,
+        "Step 2: Fetching directory for source branch '{src_branch}'..."
+    );
     let src_dir = find_worktree_for_branch(&dest_dir, &src_branch)?;
-    println!("Found source directory: '{}'", src_dir.display());
-    println!("---");
+    debug_log!(&logger, "Found source directory: '{}'", src_dir.display());
+    debug_log!(&logger, "---");
 
     let dest_dir_canon = dest_dir.canonicalize()?;
     let src_dir_canon = src_dir.canonicalize()?;
@@ -72,16 +133,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("Source and destination directories are the same. Nothing to swap.".into());
     }
 
-    println!("Step 3: Stashing changes in both worktrees (including untracked files)...");
-    let dest_stash = stash_worktree(&dest_dir, &dest_branch)?;
-    let src_stash = stash_worktree(&src_dir, &src_branch)?;
-    println!("---");
+    debug_log!(
+        &logger,
+        "Step 3: Stashing changes in both worktrees (including untracked files)..."
+    );
+    let dest_stash = stash_worktree(&dest_dir, &dest_branch, &logger)?;
+    let src_stash = stash_worktree(&src_dir, &src_branch, &logger)?;
+    debug_log!(&logger, "---");
 
-    println!("Step 4: Swapping branches between worktrees...");
-    detach_worktree(&dest_dir, &dest_branch)?;
-    if let Err(err) = detach_worktree(&src_dir, &src_branch) {
+    debug_log!(&logger, "Step 4: Swapping branches between worktrees...");
+    detach_worktree(&dest_dir, &dest_branch, &logger)?;
+    if let Err(err) = detach_worktree(&src_dir, &src_branch, &logger) {
         eprintln!("Error: {err}");
-        println!(
+        eprintln!(
             "Attempting to restore '{}' to '{}'...",
             dest_dir.display(),
             dest_branch
@@ -89,10 +153,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         let _ = run_git(Some(&dest_dir), git_args!["switch", &dest_branch]);
         return Err("Failed to detach source worktree. Aborting.".into());
     }
-    println!("Both worktrees detached. Proceeding with swap.");
+    debug_log!(&logger, "Both worktrees detached. Proceeding with swap.");
 
-    switch_worktree(&dest_dir, &src_branch)?;
-    if let Err(err) = switch_worktree(&src_dir, &dest_branch) {
+    switch_worktree(&dest_dir, &src_branch, &logger)?;
+    if let Err(err) = switch_worktree(&src_dir, &dest_branch, &logger) {
         return Err(format!(
             "Error: {err}\nCRITICAL STATE: '{}' is on '{src_branch}', but '{}' is still detached.\nPlease manually run:\n  git -C '{}' switch '{src_branch}'\n  git -C '{}' switch '{dest_branch}'",
             dest_dir.display(),
@@ -102,28 +166,40 @@ fn run() -> Result<(), Box<dyn Error>> {
         ).into());
     }
 
-    println!("Branch swap successful.");
-    println!(
+    debug_log!(&logger, "Branch swap successful.");
+    debug_log!(
+        &logger,
         "  '{}' is now on branch '{src_branch}'.",
         dest_dir.display()
     );
-    println!(
+    debug_log!(
+        &logger,
         "  '{}' is now on branch '{dest_branch}'.",
         src_dir.display()
     );
-    println!("---");
+    debug_log!(&logger, "---");
 
-    println!("Step 5: Applying stashes to their new locations...");
-    apply_and_drop_stash(&dest_dir, &src_branch, src_stash.as_ref());
-    apply_and_drop_stash(&src_dir, &dest_branch, dest_stash.as_ref());
-    println!("---");
-    println!("Worktree swap complete.");
+    debug_log!(
+        &logger,
+        "Step 5: Applying stashes to their new locations..."
+    );
+    apply_and_drop_stash(&dest_dir, &src_branch, src_stash.as_ref(), &logger);
+    apply_and_drop_stash(&src_dir, &dest_branch, dest_stash.as_ref(), &logger);
+    debug_log!(&logger, "---");
+    debug_log!(&logger, "Worktree swap complete.");
+    if !logger.is_enabled() {
+        println!(
+            "Swap complete: '{}' -> '{src_branch}', '{}' -> '{dest_branch}'.",
+            dest_dir.display(),
+            src_dir.display()
+        );
+    }
 
     Ok(())
 }
 
 fn usage_error(program: &str) -> Box<dyn Error> {
-    format!("Usage: {program} <destination_worktree_dir> <source_branch_name>").into()
+    format!("Usage: {program} [--debug|-d] <destination_worktree_dir> <source_branch_name>").into()
 }
 
 fn canonicalize_dir(path: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -256,13 +332,17 @@ fn normalize_path(base: &Path, path: &str) -> PathBuf {
     }
 }
 
-fn stash_worktree(dir: &Path, branch: &str) -> Result<Option<StashRecord>, Box<dyn Error>> {
-    println!("Stashing '{}' (Branch: {branch})...", dir.display());
+fn stash_worktree(
+    dir: &Path,
+    branch: &str,
+    logger: &Logger,
+) -> Result<Option<StashRecord>, Box<dyn Error>> {
+    debug_log!(logger, "Stashing '{}' (Branch: {branch})...", dir.display());
     let message = format!("swap-stash-{branch}");
     let output = run_git(Some(dir), git_args!["stash", "push", "-u", "-m", &message])?;
     let combined = combined_output(&output);
     if combined.trim() == "No local changes to save" {
-        println!("No changes to stash in '{}'.", dir.display());
+        debug_log!(logger, "No changes to stash in '{}'.", dir.display());
         return Ok(None);
     }
     if !output.status.success() {
@@ -280,7 +360,11 @@ fn stash_worktree(dir: &Path, branch: &str) -> Result<Option<StashRecord>, Box<d
         "Failed to determine stash SHA.",
     )?;
     let hash = rev.stdout.trim().to_string();
-    println!("Stashed changes from '{}' as {hash}.", dir.display());
+    debug_log!(
+        logger,
+        "Stashed changes from '{}' as {hash}.",
+        dir.display()
+    );
     let reference = find_stash_reference(dir, &hash)?;
     Ok(Some(StashRecord {
         hash,
@@ -305,8 +389,9 @@ fn find_stash_reference(dir: &Path, hash: &str) -> Result<Option<String>, Box<dy
     Ok(None)
 }
 
-fn detach_worktree(dir: &Path, branch: &str) -> Result<(), Box<dyn Error>> {
-    println!(
+fn detach_worktree(dir: &Path, branch: &str, logger: &Logger) -> Result<(), Box<dyn Error>> {
+    debug_log!(
+        logger,
         "Detaching HEAD in '{}' (freeing {branch})...",
         dir.display()
     );
@@ -318,8 +403,8 @@ fn detach_worktree(dir: &Path, branch: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn switch_worktree(dir: &Path, branch: &str) -> Result<(), Box<dyn Error>> {
-    println!("Switching '{}' -> to '{branch}'...", dir.display());
+fn switch_worktree(dir: &Path, branch: &str, logger: &Logger) -> Result<(), Box<dyn Error>> {
+    debug_log!(logger, "Switching '{}' -> to '{branch}'...", dir.display());
     run_git_success(
         Some(dir),
         git_args!["switch", branch],
@@ -328,9 +413,10 @@ fn switch_worktree(dir: &Path, branch: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn apply_and_drop_stash(dir: &Path, branch: &str, stash: Option<&StashRecord>) {
+fn apply_and_drop_stash(dir: &Path, branch: &str, stash: Option<&StashRecord>, logger: &Logger) {
     if let Some(stash) = stash {
-        println!(
+        debug_log!(
+            logger,
             "Applying stash {} (from {}) to '{}'...",
             stash.hash,
             stash.branch,
@@ -339,9 +425,9 @@ fn apply_and_drop_stash(dir: &Path, branch: &str, stash: Option<&StashRecord>) {
         let result = run_git(Some(dir), git_args!["stash", "apply", &stash.hash]);
         match result {
             Ok(output) if output.status.success() => {
-                println!("Successfully applied stash.");
+                debug_log!(logger, "Successfully applied stash.");
                 if let Some(reference) = &stash.reference {
-                    if let Err(err) = drop_stash(dir, reference) {
+                    if let Err(err) = drop_stash(dir, reference, logger) {
                         eprintln!("Warning: Failed to drop applied stash {reference}: {err}");
                     }
                 } else {
@@ -376,14 +462,18 @@ fn apply_and_drop_stash(dir: &Path, branch: &str, stash: Option<&StashRecord>) {
             }
         }
     } else {
-        println!("No stash from '{branch}' to apply to '{}'.", dir.display());
+        debug_log!(
+            logger,
+            "No stash from '{branch}' to apply to '{}'.",
+            dir.display()
+        );
     }
 }
 
-fn drop_stash(dir: &Path, reference: &str) -> Result<(), Box<dyn Error>> {
+fn drop_stash(dir: &Path, reference: &str, logger: &Logger) -> Result<(), Box<dyn Error>> {
     let output = run_git(Some(dir), git_args!["stash", "drop", reference])?;
     if output.status.success() {
-        println!("Dropped stash {reference}.");
+        debug_log!(logger, "Dropped stash {reference}.");
         Ok(())
     } else {
         Err(format!(
