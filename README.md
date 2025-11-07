@@ -15,7 +15,7 @@
 ```bash
 cargo install --path .
 # or, from your own clone/fork:
-cargo install --git https://github.com/<you>/swap-worktree.git
+cargo install --git https://github.com/Harineko0/swap-worktree.git
 ```
 
 #### 2. Use prebuilt binaries
