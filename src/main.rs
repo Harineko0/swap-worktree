@@ -7,9 +7,7 @@ use std::process::{Command, ExitStatus};
 
 macro_rules! git_args {
     ($($arg:expr),* $(,)?) => {{
-        let mut args = Vec::<OsString>::new();
-        $(args.push(OsString::from($arg));)*
-        args
+        vec![$(OsString::from($arg)),*]
     }};
 }
 
@@ -403,7 +401,7 @@ fn combined_output(output: &GitOutput) -> String {
     }
     if !output.stderr.trim().is_empty() {
         if !combined.is_empty() {
-            combined.push_str("\n");
+            combined.push('\n');
         }
         write!(&mut combined, "{}", output.stderr.trim()).ok();
     }
