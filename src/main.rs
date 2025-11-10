@@ -1,9 +1,38 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+
+use clap::{CommandFactory, Parser, ValueHint};
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
+use clap_complete::CompleteEnv;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "swap-worktree",
+    version,
+    about = "Swap branches (and state) between two Git worktrees.",
+    disable_help_subcommand = true
+)]
+struct Cli {
+    /// Enable verbose logging
+    #[arg(short, long)]
+    debug: bool,
+
+    /// Destination worktree directory
+    #[arg(value_hint = ValueHint::DirPath, value_name = "DESTINATION_WORKTREE_DIR")]
+    destination_worktree_dir: String,
+
+    /// Source branch to take over the destination worktree
+    #[arg(
+        value_name = "SOURCE_BRANCH_NAME",
+        add = ArgValueCompleter::new(branch_value_completer)
+    )]
+    source_branch_name: String,
+}
 
 macro_rules! git_args {
     ($($arg:expr),* $(,)?) => {{
@@ -47,61 +76,18 @@ macro_rules! debug_log {
 }
 
 fn main() {
-    if let Err(err) = run() {
+    CompleteEnv::with_factory(Cli::command).complete();
+
+    if let Err(err) = run(Cli::parse()) {
         eprintln!("{err}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
-    let mut argv = env::args();
-    let program = argv.next().unwrap_or_else(|| "swap-worktree".to_string());
-
-    let mut debug_enabled = false;
-    let mut dest_arg: Option<String> = None;
-    let mut src_branch: Option<String> = None;
-    let mut parsing_flags = true;
-
-    for arg in argv {
-        if parsing_flags {
-            match arg.as_str() {
-                "-d" | "--debug" => {
-                    debug_enabled = true;
-                    continue;
-                }
-                "--" => {
-                    parsing_flags = false;
-                    continue;
-                }
-                _ => {
-                    if arg.starts_with('-') {
-                        return Err(usage_error(&program));
-                    }
-                }
-            }
-        }
-
-        if dest_arg.is_none() {
-            dest_arg = Some(arg);
-            continue;
-        }
-        if src_branch.is_none() {
-            src_branch = Some(arg);
-            continue;
-        }
-        return Err(usage_error(&program));
-    }
-
-    let dest_arg = match dest_arg {
-        Some(value) => value,
-        None => return Err(usage_error(&program)),
-    };
-    let src_branch = match src_branch {
-        Some(value) => value,
-        None => return Err(usage_error(&program)),
-    };
-
-    let logger = Logger::new(debug_enabled);
+fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
+    let dest_arg = cli.destination_worktree_dir;
+    let src_branch = cli.source_branch_name;
+    let logger = Logger::new(cli.debug);
 
     let dest_dir = canonicalize_dir(&dest_arg)?;
     ensure_git_worktree(&dest_dir)?;
@@ -198,17 +184,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn usage_error(program: &str) -> Box<dyn Error> {
-    format!("Usage: {program} [--debug|-d] <destination_worktree_dir> <source_branch_name>").into()
-}
-
-fn canonicalize_dir(path: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = PathBuf::from(path);
+fn canonicalize_dir(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = path.as_ref();
     if !dir.exists() {
-        return Err(format!("Destination directory '{path}' does not exist.").into());
+        return Err(format!("Destination directory '{}' does not exist.", dir.display()).into());
     }
     if !dir.is_dir() {
-        return Err(format!("'{path}' is not a directory.").into());
+        return Err(format!("'{}' is not a directory.", dir.display()).into());
     }
     Ok(dir.canonicalize()?)
 }
@@ -321,6 +303,31 @@ fn find_worktree_for_branch(dir: &Path, branch: &str) -> Result<PathBuf, Box<dyn
     }
 
     Err(format!("Could not find worktree for branch '{branch}'.").into())
+}
+
+fn list_worktree_branches(dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let output = run_git_success(
+        Some(dir),
+        git_args!["worktree", "list", "--porcelain"],
+        "Failed to list worktrees.",
+    )?;
+    Ok(parse_worktree_branches(&output.stdout))
+}
+
+fn parse_worktree_branches(porcelain: &str) -> Vec<String> {
+    let mut branches = BTreeSet::new();
+    for line in porcelain.lines() {
+        let Some(rest) = line.strip_prefix("branch ") else {
+            continue;
+        };
+        let trimmed = rest.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = trimmed.strip_prefix("refs/heads/").unwrap_or(trimmed);
+        branches.insert(normalized.to_string());
+    }
+    branches.into_iter().collect()
 }
 
 fn normalize_path(base: &Path, path: &str) -> PathBuf {
@@ -541,4 +548,86 @@ fn describe_args(args: &[OsString]) -> String {
         rendered.push_str(&arg.to_string_lossy());
     }
     rendered
+}
+
+fn branch_value_completer(current: &OsStr) -> Vec<CompletionCandidate> {
+    let mut results = Vec::new();
+    let dest_dir = match completion_destination_dir() {
+        Some(dir) => dir,
+        None => return results,
+    };
+    let prefix = current.to_string_lossy();
+    if let Ok(branches) = list_worktree_branches(&dest_dir) {
+        results.extend(
+            branches
+                .into_iter()
+                .filter(|name| name.starts_with(prefix.as_ref()))
+                .map(CompletionCandidate::new),
+        );
+    }
+    results
+}
+
+fn completion_destination_dir() -> Option<PathBuf> {
+    let words = completion_words()?;
+    let dest = completion_destination(&words)?;
+    let dest_path = PathBuf::from(dest);
+    canonicalize_dir(&dest_path).ok()
+}
+
+fn completion_words() -> Option<Vec<OsString>> {
+    if env::var("_CLAP_COMPLETE_INDEX").is_err() {
+        return None;
+    }
+    let args: Vec<OsString> = env::args_os().collect();
+    let marker = args.iter().position(|arg| arg == "--")?;
+    Some(args[(marker + 1)..].to_vec())
+}
+
+fn completion_destination(words: &[OsString]) -> Option<OsString> {
+    let mut iter = words.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            return iter.next().cloned();
+        }
+        match arg.to_str() {
+            Some("-d") | Some("--debug") => continue,
+            _ => return Some(arg.clone()),
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_worktree_branches;
+
+    #[test]
+    fn parses_branches_from_porcelain() {
+        let fixture = r#"worktree /repos/main
+HEAD e1e1b70d2e8c133c96ab8050cc582f88aa83ef77
+branch refs/heads/main
+
+worktree /repos/feature-a
+HEAD 1c1cdd9c68b3bd55a72efa87c67fd03c4b5aa20c
+branch refs/heads/feature/a
+
+worktree /repos/detached
+HEAD 9a9a71114237d6a1f2ba4d0332eec2a3edf1b738
+
+"#;
+        let branches = parse_worktree_branches(fixture);
+        assert_eq!(branches, vec!["feature/a".to_string(), "main".to_string()]);
+    }
+
+    #[test]
+    fn dedupes_and_sorts_branch_names() {
+        let fixture = r#"branch refs/heads/main
+branch refs/heads/main
+branch feature/b
+branch   
+"#;
+        let branches = parse_worktree_branches(fixture);
+        assert_eq!(branches, vec!["feature/b".to_string(), "main".to_string()]);
+    }
 }

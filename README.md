@@ -71,6 +71,20 @@ The tool performs the following steps with detailed logging:
 
 If a stash fails to apply, the CLI keeps it and prints actionable guidance so you can resolve conflicts manually.
 
+### Shell completions
+
+`swap-worktree` exposes shell completions through [`clap_complete`](https://docs.rs/clap_complete), which means the binary itself handles suggestions (including dynamic branch names for the second argument). To enable completions, source the helper at login; for example:
+
+```bash
+# bash
+echo 'source <(COMPLETE=bash swap-worktree)' >> ~/.bashrc
+
+# zsh
+echo 'source <(COMPLETE=zsh swap-worktree)' >> ~/.zshrc
+```
+
+Restart the shell (or source your rc file) and you should be able to tab-complete both the destination directory (handled by the shell) and the branch name (served by `swap-worktree` by inspecting the Git worktrees under the destination).
+
 ### Development workflow
 
 ```bash
