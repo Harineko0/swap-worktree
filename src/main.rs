@@ -76,7 +76,7 @@ macro_rules! debug_log {
 }
 
 fn main() {
-    CompleteEnv::with_factory(|| Cli::command()).complete();
+    CompleteEnv::with_factory(Cli::command).complete();
 
     if let Err(err) = run(Cli::parse()) {
         eprintln!("{err}");
